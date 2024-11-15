@@ -1,0 +1,239 @@
+from aiogram import Bot, Dispatcher, types, F
+from aiogram.filters import Command
+from aiogram.types import chat_permissions
+
+import asyncio
+import re, numpy, os, codecs, requests
+from datetime import timedelta
+from aiogram.utils.keyboard import InlineKeyboardBuilder
+from apscheduler.schedulers.asyncio import AsyncIOScheduler
+
+badWords = []  # список плохих слов
+
+if not os.path.isfile('list.txt'):
+    file = open('list.txt', 'w+', encoding='utf-8')
+
+with codecs.open('list.txt', 'r', encoding='utf-8') as l:
+    badWords = l.read().split()
+
+token = ''
+cautions = {}
+bans = {}
+lim = 3  # максимум плохих сообщений от человека
+absolute = True
+
+if token == '':
+    token = input('Введите токен: ')
+
+bot = Bot(token)
+dp = Dispatcher()
+
+
+@dp.message(Command(commands=['menu', 'start']))
+async def start(message: types.Message):
+    builder = InlineKeyboardBuilder()
+    builder.button(text='Привет', callback_data='hello')
+    builder.button(text='Бросить кубик', callback_data='Dice')
+    builder.button(text='Бросить баскетбольный мяч', callback_data='ball')
+
+    await message.answer(text='а?', reply_markup=builder.as_markup())
+
+
+@dp.message(Command(commands=['word']))
+async def whitelist(message: types.Message):
+    userId = message.from_user.id
+    channelId = message.chat.id
+
+    if userId not in [x.user.id for x in await bot.get_chat_administrators(chat_id=channelId)]:
+        return
+
+    command = message.text.split()
+    if len(command) < 2:
+        await message.answer('/word <слово, которое нужно удалить или добавить в список>')
+    else:
+        word = command[1]
+        with codecs.open('list.txt', 'r', encoding='utf-8') as l:
+            badWords = l.read().split()
+
+        if word.lower() in badWords:
+            badWords.remove(word.lower())
+        else:
+            badWords.append(word.lower())
+
+    with codecs.open('list.txt', 'w+', encoding='utf-8') as l:
+        l.write(' '.join(badWords))
+    print(badWords)
+
+
+@dp.message(Command(commands=['abs', 'absolute']))
+async def absoluting(message: types.Message):
+    userId = message.from_user.id
+    channelId = message.chat.id
+
+    if userId not in [x.user.id for x in await bot.get_chat_administrators(chat_id=channelId)]:
+        return
+
+    global absolute
+    absolute = bool(1 - absolute)
+
+
+@dp.message(Command(commands=['lim']))
+async def limit(message: types.Message):
+    userId = message.from_user.id
+    channelId = message.chat.id
+
+    global lim
+
+    if userId not in [x.user.id for x in await bot.get_chat_administrators(chat_id=channelId)]:
+        return
+
+    command = message.text.split()
+    if len(command) < 2:
+        await message.answer('/word <количество предупреждений>')
+    else:
+        try:
+            lim = int(command[1])
+        except Exception as error:
+            print(error)
+    print(lim)
+
+
+@dp.message()
+async def reader(message: types.Message):
+    if None != message.photo or None != message.video:
+        content = message.caption
+    else:
+        content = message.text
+
+    userId = message.from_user.id
+    channelId = message.chat.id
+    if userId in [x.user.id for x in await bot.get_chat_administrators(chat_id=channelId)]:
+        pass
+
+    if blur(content):
+        if userId in cautions.keys():
+            cautions[userId] += 1
+        else:
+            cautions[userId] = 1
+
+        if cautions[userId] >= lim:
+            try:
+                await message.reply(text=f'Предупреждения были проигнорированны.')
+                await message.delete()
+                del cautions[userId]
+
+                if userId in bans.keys():
+                    bans[userId] += 1
+                else:
+                    bans[userId] = 1
+
+                if bans[userId] > 3:
+                    del bans[userId]
+                    await message.bot.ban_chat_member(chat_id=message.chat.id, user_id=userId)
+                else:
+                    await message.bot.restrict_chat_member(chat_id=message.chat.id, user_id=userId,
+                                                           until_date=timedelta(
+                                                               seconds=15 * 60 * (2 ** (bans[userId] - 1))),
+                                                           permissions=chat_permissions.ChatPermissions(
+                                                               can_send_messages=False,
+                                                               can_send_polls=False,
+                                                               can_send_other_messages=False,
+                                                               can_send_media_messages=False))
+            except Exception as error:
+                print(error)
+        else:
+            try:
+                await message.reply(text=f'Предупреждение {cautions[userId]}/{lim}')
+                await message.delete()
+            except Exception as error:
+                print(error)
+
+
+@dp.callback_query()
+async def callback(call: types.CallbackQuery):
+    match call.data:
+        case 'hello':
+            await call.message.answer(text=Hello())
+        case 'Dice':
+            await call.message.answer(text=Dice(6)[1])
+        case 'ball':
+            await call.message.answer(text=ball())
+
+
+def Hello():
+    hi = numpy.random.choice(['Bonjour, monde!', 'Hola, món!', 'Привет, мир!', 'Hello world!'])
+    return hi
+
+
+def Dice(n: int):
+    result = numpy.random.randint(1, n + 1)
+    text = f'Выпало {result}.'
+
+    if result == 1:
+        text += numpy.random.choice([' Бывает.', ' Попробуй позже.'])
+    elif result == n:
+        text += numpy.random.choice([' Везунчик!', ' Критическая удача!'])
+
+    return (result, text)
+
+
+def ball():
+    result = numpy.random.choice([0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 2, 2, 3])
+    match result:
+        case 0:
+            text = 'Не попал'
+        case 1:
+            text = 'Попал! 1 очко'
+        case 2:
+            text = 'Двухочковый'
+        case 3:
+            text = 'Трёхочковый!!!'
+
+    return text
+
+
+def blur(text):
+    problem = False
+
+    if not isinstance(text, str):
+        return problem
+
+    with codecs.open('list.txt', 'r+', encoding='utf-8') as l:
+        badWords = l.read().split()
+
+    text = text.lower()
+    for word in badWords:
+        find = re.findall(pattern=fr'\b{word}\b' if absolute else fr'{word}', string=text)
+        if find != []:
+            problem = True
+            break
+
+    return problem
+
+
+main_chat_id = ''
+if main_chat_id == '':
+    main_chat_id = input('chatId: ')
+messages = ['Всем привет', 'ку', 'здарова']
+
+
+async def randSend():
+    text = requests.get('https://fish-text.ru/get', params={'type': 'sentence', 'number': 1, 'format': 'json'}).json()
+
+    await bot.send_message(chat_id=int(main_chat_id), text=text['text'])
+
+
+scheduler = AsyncIOScheduler()
+
+
+async def main():
+    scheduler.add_job(randSend,
+                      "interval",
+                      seconds=300)
+
+    scheduler.start()
+
+    await dp.start_polling(bot)
+
+
+asyncio.run(main())
